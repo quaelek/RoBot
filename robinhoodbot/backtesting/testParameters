@@ -1,0 +1,89 @@
+import pandas as pd
+import csv
+
+# Example parameters to call the function
+short_term_indicator = 50
+long_term_indicator = 200
+stop_loss_pct = 0.03
+take_profit_pct = 0.1
+trailing_stop_pct = 0.05
+
+def backtest_strategy(short_term_indicator, long_term_indicator, stop_loss_pct, take_profit_pct, trailing_stop_pct):
+    # Load data from a CSV file
+    data = pd.read_csv('<CSV File formatted with two columns: "date", and "close">')
+
+    # Set up the backtesting parameters
+    stock_ticker = '<TICKER>'
+    start_date = '<A START DATE YOU CAN FIND IN YOUR CSV>'
+    starting_balance = 25000
+
+    # Filter the data to start at the specified date
+    start_index = data[data['date'] == start_date].index[0]
+    data = data.loc[start_index:]
+
+    # Calculate the moving averages
+    data[f'SMA_{short_term_indicator}'] = data['close'].rolling(window=short_term_indicator).mean()
+    data[f'SMA_{long_term_indicator}'] = data['close'].rolling(window=long_term_indicator).mean()
+
+    # Initialize the trading variables
+    balance = starting_balance
+    shares = 0
+    last_action = None
+    entry_price = 0
+
+    # Initialize a list to store the daily final balance
+    daily_balance = []
+
+    # Iterate over each day in the data
+    for i, row in data.iterrows():
+        # Check if a golden/death cross occurs
+        if row[f'SMA_{short_term_indicator}'] > row[f'SMA_{long_term_indicator}']:
+            cross = 1
+        elif row[f'SMA_{short_term_indicator}'] < row[f'SMA_{long_term_indicator}']:
+            cross = -1
+        else:
+            cross = 0
+
+        # Execute the trading strategy based on the cross and available balance
+        if cross == 1 and last_action != 'buy' and balance >= row['close']:
+            shares = balance // row['close']
+            balance -= shares * row['close']
+            last_action = 'buy'
+            entry_price = row['close']
+        elif cross == -1 and last_action != 'sell' and shares > 0:
+            balance += shares * row['close']
+            shares = 0
+            last_action = 'sell'
+        elif last_action == 'buy':  # Implement stop loss, take profit, and trailing stop
+            current_return = (row['close'] - entry_price) / entry_price
+            if current_return <= -stop_loss_pct or current_return >= take_profit_pct:
+                balance += shares * row['close']
+                shares = 0
+                last_action = 'sell'
+            elif current_return >= trailing_stop_pct:
+                new_stop_loss = entry_price * (1 + trailing_stop_pct)
+                if row['close'] < new_stop_loss:
+                    balance += shares * row['close']
+                    shares = 0
+                    last_action = 'sell'
+
+        # Calculate the daily final balance
+        if shares > 0:
+            daily_final_balance = shares * row['close'] + balance
+        else:
+            daily_final_balance = balance
+        
+        # Store the daily final balance
+        daily_balance.append((row['date'], daily_final_balance))
+
+    # Write daily_balance to a CSV file
+    with open('daily_balance.csv', 'w', newline='') as csvfile:
+        csv_writer = csv.writer(csvfile)
+        csv_writer.writerow(['Date', 'Balance'])
+        for balance_row in daily_balance:
+            csv_writer.writerow(balance_row)
+
+    return daily_balance
+
+
+daily_balance = backtest_strategy(short_term_indicator, long_term_indicator, stop_loss_pct, take_profit_pct, trailing_stop_pct)
