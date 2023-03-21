@@ -1,0 +1,154 @@
+import pandas as pd
+import itertools
+import sys
+import time
+import concurrent.futures
+
+def backtest_strategy(short_term_indicator, long_term_indicator, stop_loss_pct, take_profit_pct, trailing_stop_pct):
+    # Load data from a CSV file
+    data = pd.read_csv('<CSV File formatted with two columns: "date", and "close" close refers to closing price but it can be any')
+
+    # Set up the backtesting parameters
+    stock_ticker = '<TICKER>'
+    start_date = '<A START DATE YOU CAN FIND IN YOUR CSV'
+    starting_balance = 25000 #or anything
+
+    # Filter the data to start at the specified date
+    start_index = data[data['date'] == start_date].index[0]
+    data = data.loc[start_index:]
+
+    # Calculate the moving averages
+    data[f'SMA_{short_term_indicator}'] = data['close'].rolling(window=short_term_indicator).mean()
+    data[f'SMA_{long_term_indicator}'] = data['close'].rolling(window=long_term_indicator).mean()
+
+    # Initialize the trading variables
+    balance = starting_balance
+    shares = 0
+    last_action = None
+    entry_price = 0
+
+    # Initialize a list to store the daily final balance
+    daily_balance = []
+
+    # Iterate over each day in the data
+    for i, row in data.iterrows():
+        # Check if a golden/death cross occurs
+        if row[f'SMA_{short_term_indicator}'] > row[f'SMA_{long_term_indicator}']:
+            cross = 1
+        elif row[f'SMA_{short_term_indicator}'] < row[f'SMA_{long_term_indicator}']:
+            cross = -1
+        else:
+            cross = 0
+
+        # Execute the trading strategy based on the cross and available balance
+        if cross == 1 and last_action != 'buy' and balance >= row['close']:
+            shares = balance // row['close']
+            balance -= shares * row['close']
+            last_action = 'buy'
+            entry_price = row['close']
+        elif cross == -1 and last_action != 'sell' and shares > 0:
+            balance += shares * row['close']
+            shares = 0
+            last_action = 'sell'
+        elif last_action == 'buy':  # Implement stop loss, take profit, and trailing stop
+            current_return = (row['close'] - entry_price) / entry_price
+            if current_return <= -stop_loss_pct or current_return >= take_profit_pct:
+                balance += shares * row['close']
+                shares = 0
+                last_action = 'sell'
+            elif current_return >= trailing_stop_pct:
+                new_stop_loss = entry_price * (1 + trailing_stop_pct)
+                if row['close'] < new_stop_loss:
+                    balance += shares * row['close']
+                    shares = 0
+                    last_action = 'sell'
+
+        # Calculate the daily final balance
+        if shares > 0:
+            daily_final_balance = shares * row['close'] + balance
+        else:
+            daily_final_balance = balance
+        
+        # Store the daily final balance
+        daily_balance.append((row['date'], daily_final_balance))
+
+    return daily_balance
+
+def parallel_backtest(combination):
+    short_term, long_term, stop_loss, take_profit, trailing_stop = combination
+    daily_balance = backtest_strategy(short_term, long_term, stop_loss, take_profit, trailing_stop)
+    final_balance = daily_balance[-1][1]
+    return (short_term, long_term, stop_loss, take_profit, trailing_stop, final_balance)
+
+
+# Define the parameter ranges
+stop_loss_pct_range = range(1, 11)   # minimum, maximum, step
+take_profit_pct_range = range(1, 11)   
+trailing_stop_pct_range = range(1, 11)
+short_term_indicator_range = range(1, 11)
+long_term_indicator_range = range(11, 31)
+
+# Convert the integer ranges to percentage values (float)
+stop_loss_pct_range = [x / 100 for x in stop_loss_pct_range]
+take_profit_pct_range = [x / 100 for x in take_profit_pct_range]
+trailing_stop_pct_range = [x / 100 for x in trailing_stop_pct_range]
+
+
+# Generate all possible combinations of parameters
+combinations = list(itertools.product(
+    short_term_indicator_range,
+    long_term_indicator_range,
+    stop_loss_pct_range,
+    take_profit_pct_range,
+    trailing_stop_pct_range))
+
+# Initialize a list to store the results
+results = []
+
+# Calculate the total number of combinations
+total_combinations = len(combinations)
+
+# Initialize variables for logging progress and estimating duration remaining
+start_time = time.time()
+completed_combinations = 0
+total_combinations = len(combinations)
+est_duration_remaining = None
+
+# Use a ThreadPoolExecutor to parallelize the backtesting process
+with concurrent.futures.ThreadPoolExecutor() as executor:
+    future_results = {executor.submit(parallel_backtest, combination): combination for combination in combinations}
+
+    # Process the results as they complete
+    for future in concurrent.futures.as_completed(future_results):
+        result = future.result()
+        results.append(result)
+
+        # Calculate and log the percentage of completion
+        completed_combinations += 1
+        completion_pct = completed_combinations / total_combinations * 100
+        sys.stdout.write(f"\r{completion_pct:.2f}% completed")
+
+        # Estimate the duration remaining based on the completed percentage
+        if completed_combinations > 1:
+            elapsed_time = time.time() - start_time
+            est_time_per_combination = elapsed_time / completed_combinations
+            est_remaining_time = est_time_per_combination * (total_combinations - completed_combinations)
+            est_duration_remaining = f"{est_remaining_time:.2f} seconds remaining"
+        sys.stdout.write(f" ({est_duration_remaining})")
+        sys.stdout.flush()
+
+# Log the total duration of the backtesting process
+total_duration = time.time() - start_time
+sys.stdout.write(f"\nBacktesting completed in {total_duration:.2f} seconds")
+
+# Sort the results by final balance (descending)
+results.sort(key=lambda x: x[5], reverse=True)
+
+# Take the top 50 results   
+top_50_results = results[:50]
+
+# Create a DataFrame for the top 50 results
+top_50_results_df = pd.DataFrame(top_50_results, columns=['short_term_indicator', 'long_term_indicator', 'stop_loss_pct', 'take_profit_pct', 'trailing_stop_pct', 'final_balance'])
+
+# Export the top 50 results to a CSV
+top_50_results_df.to_csv('top_50_combinations.csv', index=False)
